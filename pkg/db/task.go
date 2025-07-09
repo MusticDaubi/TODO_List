@@ -18,9 +18,6 @@ type Task struct {
 
 func AddTask(task *Task) (int64, error) {
 	var id int64
-	if DB == nil {
-		return 0, errors.New("db not initialized")
-	}
 
 	query := `INSERT INTO scheduler (date, title, comment, repeat) VALUES (:date, :title, :comment, :repeat)`
 	res, err := DB.Exec(query, sql.Named("date", task.Date), sql.Named("title", task.Title), sql.Named("comment", task.Comment), sql.Named("repeat", task.Repeat))
@@ -80,4 +77,45 @@ func Tasks(limit int, flag bool, search ...string) ([]*Task, error) {
 	}
 
 	return tasks, nil
+}
+
+func Update(t Task) (sql.Result, error) {
+	query := `UPDATE scheduler SET date = :date, title = :title, comment = :comment, repeat = :repeat WHERE id = :id`
+	return DB.Exec(query, sql.Named("date", t.Date), sql.Named("title", t.Title), sql.Named("comment", t.Comment), sql.Named("repeat", t.Repeat), sql.Named("id", t.ID))
+}
+
+func DeleteTask(id string) error {
+	query := `DELETE FROM scheduler WHERE id = :id`
+	_, err := DB.Exec(query, sql.Named("id", id))
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+func GetTask(id string) (*Task, error) {
+	var t Task
+	if id == "" {
+		return nil, errors.New("task ID cannot be empty")
+	}
+
+	query := `SELECT id, date, title, comment, repeat FROM scheduler WHERE id = :id`
+	err := DB.QueryRow(query, sql.Named("id", id)).Scan(&t.ID, &t.Date, &t.Title, &t.Comment, &t.Repeat)
+
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, fmt.Errorf("task not found (id: %s)", id)
+		}
+		return nil, fmt.Errorf("query error: %w", err)
+	}
+	return &t, nil
+}
+
+func UpdateTask(nextDate string, id string) error {
+	query := `UPDATE scheduler SET date = :date WHERE id = :id`
+	_, err := DB.Exec(query, sql.Named("date", nextDate), sql.Named("id", id))
+	if err != nil {
+		return err
+	}
+	return nil
 }

@@ -41,13 +41,21 @@ var FullNextDate = true
 var Search = true
 var Token = `eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJwYXNzd29yZF9oYXNoIjoiNTk5NDQ3MWFiYjAxMTEyYWZjYzE4MTU5ZjZjYzc0YjRmNTExYjk5ODA2ZGE1OWIzY2FmNWE5YzE3M2NhY2ZjNSJ9.KpzOXxQ3VFe8NXxxsYyIZQesk94p82sjQrNUSkV_T04`
 
-Для создания docker-образа используются следующие команды:
-docker build -t final_app .
+Для создания и запуска docker-образа используются следующие команды:
+$envVars = Get-Content .env | Where-Object { $_ -notmatch '^\s*#' -and $_ -match '=' } |
+ConvertFrom-StringData
+
+$port = $envVars.TODO_PORT
+$dbfile = $envVars.TODO_DBFILE
+
+docker build `
+  --build-arg TODO_PORT=$port `
+--build-arg TODO_DBFILE=$dbfile `
+-t finapp .
 
 docker run -d `
-  -p 7540:7540 `
--v ${PWD}/scheduler.db:/app/scheduler.db `
-  -e TODO_PASSWORD="12345" `
--e TODO_PORT=7540 `
-  --name final_container `
-final_app
+  -p "${port}:${port}" `
+-e TODO_PORT=$port `
+  -e TODO_DBFILE=$dbfile `
+--name finapp_container `
+finapp

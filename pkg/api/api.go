@@ -5,9 +5,9 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
-	"log"
+	"errors"
 	"net/http"
-	"os"
+	"strings"
 	"time"
 
 	"final_project/pkg/db"
@@ -15,9 +15,14 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 )
 
-var Format = "20060102"
+var (
+	Format       = "20060102"
+	todoPassword string
+)
 
-func Init() {
+func Init(password string) {
+	todoPassword = password
+
 	http.HandleFunc("/api/nextdate", nextDayHandler)
 	http.HandleFunc("/api/task", auth(taskHandler))
 	http.HandleFunc("/api/tasks", auth(tasksHandler))
@@ -34,16 +39,18 @@ func nextDayHandler(w http.ResponseWriter, r *http.Request) {
 	repeat := r.FormValue("repeat")
 	timeNow, err := time.Parse(Format, now)
 	if err != nil {
-		http.Error(w, "Invalid 'now' date format", http.StatusBadRequest)
+		sendError(w, http.StatusBadRequest, "Invalid 'now' date format")
 		return
 	}
 	result, err := NextDate(timeNow, date, repeat)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		sendError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-
-	w.Header().Set("Content-Type", "application/json")
+	type NextDateResponse struct {
+		Date string `json:"date"`
+	}
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.Write([]byte(result))
 }
 
@@ -58,112 +65,90 @@ func taskHandler(w http.ResponseWriter, r *http.Request) {
 	case http.MethodDelete:
 		deleteTaskHandler(w, r)
 	default:
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		sendError(w, http.StatusMethodNotAllowed, "Method not allowed")
 	}
 
 }
 
 func taskDoneHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusMethodNotAllowed)
-		json.NewEncoder(w).Encode(ErrorResp{Error: "Method not allowed"})
+		sendError(w, http.StatusMethodNotAllowed, "Method not allowed")
 		return
 	}
 	id := r.URL.Query().Get("id")
-	t, err := getTask(id)
+	t, err := db.GetTask(id)
 	if err != nil {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusBadRequest)
-		json.NewEncoder(w).Encode(ErrorResp{Error: err.Error()})
+		sendError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	if t.Repeat == "" {
-		err = db.DeleteTask(id)
-		if err != nil {
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusInternalServerError)
-			json.NewEncoder(w).Encode(ErrorResp{Error: err.Error()})
+		if err = db.DeleteTask(id); err != nil {
+			sendError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		json.NewEncoder(w).Encode(struct{}{})
+		sendResponse(w, http.StatusOK, struct{}{})
 		return
 	}
 	now := time.Now()
 	nextDate, err := NextDate(now, t.Date, t.Repeat)
 	if err != nil {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusInternalServerError)
-		json.NewEncoder(w).Encode(ErrorResp{Error: err.Error()})
+		sendError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	query := `UPDATE scheduler SET date = :date WHERE id = :id`
-	_, err = db.DB.Exec(query, sql.Named("date", nextDate), sql.Named("id", t.ID))
+	err = db.UpdateTask(nextDate, t.ID)
 	if err != nil {
-		w.WriteHeader(http.StatusInternalServerError)
-		json.NewEncoder(w).Encode(ErrorResp{err.Error()})
+		sendError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(struct{}{})
+	sendResponse(w, http.StatusOK, struct{}{})
 	return
 }
 
 func getSingleTaskHandler(w http.ResponseWriter, r *http.Request) {
 	id := r.URL.Query().Get("id")
 	if id == "" {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusBadRequest)
-		json.NewEncoder(w).Encode(ErrorResp{Error: "task ID is required"})
+		sendError(w, http.StatusBadRequest, "task ID is required")
 		return
 	}
 
-	task, err := getTask(id)
+	task, err := db.GetTask(id)
 	if err != nil {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusNotFound)
-		json.NewEncoder(w).Encode(ErrorResp{Error: err.Error()})
+		if errors.Is(err, sql.ErrNoRows) || strings.Contains(err.Error(), "not found") {
+			sendError(w, http.StatusNotFound, err.Error())
+		} else {
+			sendError(w, http.StatusInternalServerError, err.Error())
+		}
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(task)
+	sendResponse(w, http.StatusOK, task)
 }
 
 func deleteTaskHandler(w http.ResponseWriter, r *http.Request) {
 	id := r.URL.Query().Get("id")
 
 	if id == "" {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusBadRequest)
-		json.NewEncoder(w).Encode(ErrorResp{Error: "task ID is required"})
+		sendError(w, http.StatusBadRequest, "task ID is required")
 		return
 	}
 
-	_, err := getTask(id)
+	_, err := db.GetTask(id)
 	if err != nil {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusNotFound)
-		json.NewEncoder(w).Encode(ErrorResp{Error: err.Error()})
+		if errors.Is(err, sql.ErrNoRows) || strings.Contains(err.Error(), "not found") {
+			sendError(w, http.StatusNotFound, err.Error())
+		} else {
+			sendError(w, http.StatusInternalServerError, err.Error())
+		}
 		return
 	}
 
 	err = db.DeleteTask(id)
 	if err != nil {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusInternalServerError)
-		json.NewEncoder(w).Encode(ErrorResp{err.Error()})
+		sendError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(struct{}{})
-	return
+	sendResponse(w, http.StatusOK, struct{}{})
 }
 
 func authHandler(w http.ResponseWriter, r *http.Request) {
@@ -172,35 +157,22 @@ func authHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var reqData RequestData
-	err := json.NewDecoder(r.Body).Decode(&reqData)
-	if err != nil {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusBadRequest)
-		json.NewEncoder(w).Encode(ErrorResp{Error: err.Error()})
+	if err := json.NewDecoder(r.Body).Decode(&reqData); err != nil {
+		sendError(w, http.StatusBadRequest, "Invalid JSON: "+err.Error())
 		return
 	}
 
 	if reqData.Password == "" {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusBadRequest)
-		json.NewEncoder(w).Encode(ErrorResp{Error: "password is required"})
+		sendError(w, http.StatusBadRequest, "password is required")
 		return
 	}
 
-	password := os.Getenv("TODO_PASSWORD")
-	if password == "" {
-		log.Print("failed to get password from env, using default password")
-		password = "12345"
-	}
-
-	if password != reqData.Password {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusBadRequest)
-		json.NewEncoder(w).Encode(ErrorResp{Error: "incorrect password"})
+	if todoPassword != reqData.Password {
+		sendError(w, http.StatusBadRequest, "incorrect password")
 		return
 	}
 
-	pass := []byte(password)
+	pass := []byte(todoPassword)
 	hash := sha256.Sum256(pass)
 	hashedPass := hex.EncodeToString(hash[:])
 
@@ -211,75 +183,52 @@ func authHandler(w http.ResponseWriter, r *http.Request) {
 
 	signedToken, err := jwtToken.SignedString(pass)
 	if err != nil {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusInternalServerError)
-		json.NewEncoder(w).Encode(ErrorResp{Error: err.Error()})
+		sendError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(map[string]string{"token": signedToken})
+	sendResponse(w, http.StatusOK, map[string]string{"token": signedToken})
 	return
 }
 
 func auth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		pass := os.Getenv("TODO_PASSWORD")
-		if pass == "" {
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusInternalServerError)
-			json.NewEncoder(w).Encode(ErrorResp{Error: "password in env is not set"})
-			return
-		}
 		cookie, err := r.Cookie("token")
 		if err != nil {
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusUnauthorized)
-			json.NewEncoder(w).Encode(ErrorResp{Error: "missing token"})
+			sendError(w, http.StatusUnauthorized, "missing token")
 			return
 		}
 
 		token, err := jwt.Parse(cookie.Value, func(token *jwt.Token) (interface{}, error) {
-			return []byte(pass), nil
+			return []byte(todoPassword), nil
 		})
 
 		if err != nil {
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusUnauthorized)
-			json.NewEncoder(w).Encode(ErrorResp{"invalid token: " + err.Error()})
+			sendError(w, http.StatusUnauthorized, "invalid token: "+err.Error())
 			return
 		}
 
 		if !token.Valid {
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusUnauthorized)
-			json.NewEncoder(w).Encode(ErrorResp{Error: "invalid token"})
+			sendError(w, http.StatusUnauthorized, "invalid token")
 			return
 		}
 
 		claims, ok := token.Claims.(jwt.MapClaims)
 		if !ok {
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusUnauthorized)
-			json.NewEncoder(w).Encode(ErrorResp{Error: "invalid token claims"})
+			sendError(w, http.StatusUnauthorized, "invalid token claims")
 			return
 		}
 
 		tokenHash, ok := claims["password_hash"].(string)
 		if !ok {
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusUnauthorized)
-			json.NewEncoder(w).Encode(ErrorResp{Error: "missing password hash"})
+			sendError(w, http.StatusUnauthorized, "missing password hash")
 			return
 		}
 
-		currentHashBytes := sha256.Sum256([]byte(pass))
+		currentHashBytes := sha256.Sum256([]byte(todoPassword))
 		currentHash := hex.EncodeToString(currentHashBytes[:])
 		if currentHash != tokenHash {
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusUnauthorized)
-			json.NewEncoder(w).Encode(ErrorResp{Error: "invalid token"})
+			sendError(w, http.StatusUnauthorized, "invalid token")
 			return
 		}
 		next(w, r)

@@ -1,10 +1,7 @@
 package api
 
 import (
-	"database/sql"
 	"encoding/json"
-	"errors"
-	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -12,6 +9,8 @@ import (
 
 	"final_project/pkg/db"
 )
+
+const limit = 30
 
 type TasksResp struct {
 	Tasks []*db.Task `json:"tasks"`
@@ -32,107 +31,77 @@ func tasksHandler(w http.ResponseWriter, r *http.Request) {
 		if flag {
 			t, err := time.Parse("02.01.2006", search)
 			if err != nil {
-				w.Header().Set("Content-Type", "application/json")
-				w.WriteHeader(http.StatusBadRequest)
-				json.NewEncoder(w).Encode(ErrorResp{Error: err.Error()})
+				sendError(w, http.StatusBadRequest, err.Error())
 				return
 			}
 			search = t.Format(Format)
 		}
 	}
 
-	tasks, err := db.Tasks(30, flag, search)
+	tasks, err := db.Tasks(limit, flag, search)
 	if err != nil {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusBadRequest)
-		json.NewEncoder(w).Encode(ErrorResp{Error: err.Error()})
+		sendError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	if tasks == nil {
 		tasks = make([]*db.Task, 0)
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(TasksResp{Tasks: tasks})
-}
-
-func getTask(id string) (*db.Task, error) {
-	query := `SELECT id, date, title, comment, repeat FROM scheduler WHERE id = :id`
-	var t db.Task
-	err := db.DB.QueryRow(query, sql.Named("id", id)).Scan(&t.ID, &t.Date, &t.Title, &t.Comment, &t.Repeat)
-	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return nil, fmt.Errorf("task not found (id: %d)", id)
-		}
-		return nil, fmt.Errorf("query error: %w", err)
-	}
-	return &t, nil
+	sendResponse(w, http.StatusOK, TasksResp{Tasks: tasks})
 }
 
 func updateTask(w http.ResponseWriter, r *http.Request) {
 	bodyBytes, err := io.ReadAll(r.Body)
 	if err != nil {
-		w.WriteHeader(http.StatusBadRequest)
-		json.NewEncoder(w).Encode(ErrorResp{"Failed to read request body"})
+		sendError(w, http.StatusBadRequest, "Failed to read request body")
 		return
 	}
 	defer r.Body.Close()
 
 	var t db.Task
 	if err = json.Unmarshal(bodyBytes, &t); err != nil {
-		w.WriteHeader(http.StatusBadRequest)
-		json.NewEncoder(w).Encode(ErrorResp{"Invalid JSON format"})
+		sendError(w, http.StatusBadRequest, "Invalid JSON format")
 		return
 	}
-
-	w.Header().Set("Content-Type", "application/json")
 
 	if t.ID == "" {
-		w.WriteHeader(http.StatusBadRequest)
-		json.NewEncoder(w).Encode(ErrorResp{"Task ID is required"})
+		sendError(w, http.StatusBadRequest, "Task ID is required")
 		return
 	}
 
-	_, err = getTask(t.ID)
+	_, err = db.GetTask(t.ID)
 	if err != nil {
-		w.WriteHeader(http.StatusNotFound)
-		json.NewEncoder(w).Encode(ErrorResp{err.Error()})
+		sendError(w, http.StatusNotFound, err.Error())
 		return
 	}
 
 	if t.Title == "" {
-		w.WriteHeader(http.StatusBadRequest)
-		json.NewEncoder(w).Encode(ErrorResp{"Title is required"})
+		sendError(w, http.StatusBadRequest, "Title is required")
 		return
 	}
 
 	if err = CheckDate(&t); err != nil {
-		w.WriteHeader(http.StatusBadRequest)
-		json.NewEncoder(w).Encode(ErrorResp{err.Error()})
+		sendError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
-	query := `UPDATE scheduler SET date = :date, title = :title, comment = :comment, repeat = :repeat WHERE id = :id`
-	res, err := db.DB.Exec(query, sql.Named("date", t.Date), sql.Named("title", t.Title), sql.Named("comment", t.Comment), sql.Named("repeat", t.Repeat), sql.Named("id", t.ID))
+	res, err := db.Update(t)
 	if err != nil {
-		w.WriteHeader(http.StatusInternalServerError)
-		json.NewEncoder(w).Encode(ErrorResp{err.Error()})
+		sendError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
 	checkRows, err := res.RowsAffected()
 	if err != nil {
-		w.WriteHeader(http.StatusInternalServerError)
-		json.NewEncoder(w).Encode(ErrorResp{err.Error()})
+		sendError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
 	if checkRows == 0 {
-		w.WriteHeader(http.StatusNotFound)
-		json.NewEncoder(w).Encode(ErrorResp{"task not found"})
+		sendError(w, http.StatusNotFound, "task not found")
 		return
 	}
-	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(struct{}{})
+
+	sendResponse(w, http.StatusOK, struct{}{})
 	return
 }

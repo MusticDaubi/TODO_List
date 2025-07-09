@@ -13,6 +13,12 @@ import (
 	"github.com/joho/godotenv"
 )
 
+const (
+	file        = "scheduler.db"
+	defaultPort = "7540"
+	Password    = "12345"
+)
+
 func main() {
 	err := godotenv.Load()
 	if err != nil {
@@ -21,7 +27,7 @@ func main() {
 
 	dbFile := strings.TrimSpace(os.Getenv("TODO_DBFILE"))
 	if dbFile == "" {
-		dbFile = "scheduler.db"
+		dbFile = file
 		log.Printf("Variable TODO_DBFILE is not installed, default DBFILE is used: %s", dbFile)
 	} else {
 		log.Printf("Used DBFILE from TODO_DBFILE: %s", dbFile)
@@ -32,11 +38,17 @@ func main() {
 	}
 	defer db.DB.Close()
 
-	api.Init()
+	password := os.Getenv("TODO_PASSWORD")
+	if password == "" {
+		password = Password
+		log.Printf("Variable TODO_PASSWORD is not installed, default password is used: %s", password)
+	}
+
+	api.Init(password)
 
 	port := strings.TrimSpace(os.Getenv("TODO_PORT"))
 	if port == "" {
-		port = "7540"
+		port = defaultPort
 		log.Printf("Variable TODO_PORT is not installed, default port is used: %s", port)
 	} else {
 		log.Printf("Used port from TODO_PORT: %s", port)
